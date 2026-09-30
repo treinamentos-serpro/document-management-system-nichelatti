@@ -29,33 +29,51 @@ async function request(pathname, options = {}) {
   return fetch(`${baseUrl}${pathname}`, options);
 }
 
+async function uploadDocument(owner, content = 'conteúdo seguro', filename = 'relatorio.txt') {
+  const formData = new FormData();
+  formData.append('file', new Blob([content], { type: 'text/plain' }), filename);
+
+  const response = await request('/upload', {
+    method: 'POST',
+    headers: { 'x-user-id': owner },
+    body: formData,
+  });
+
+  return { response, metadata: await response.json() };
+}
+
 test('exige um usuário válido', async () => {
   const response = await request('/documents');
 
   assert.equal(response.status, 401);
 });
 
-test('faz upload, lista e baixa apenas para o proprietário', async () => {
-  const formData = new FormData();
-  formData.append('file', new Blob(['conteúdo seguro'], { type: 'text/plain' }), '../relatorio.txt');
+test('faz upload de um documento', async () => {
+  const { response, metadata } = await uploadDocument('alice', 'conteúdo seguro', '../relatorio.txt');
 
-  const uploadResponse = await request('/upload', {
-    method: 'POST',
-    headers: { 'x-user-id': 'alice' },
-    body: formData,
-  });
-  const metadata = await uploadResponse.json();
-
-  assert.equal(uploadResponse.status, 201);
+  assert.equal(response.status, 201);
   assert.equal(metadata.originalName, 'relatorio.txt');
+  assert.equal(metadata.size, Buffer.byteLength('conteúdo seguro'));
   assert.equal(metadata.owner, 'alice');
   assert.match(metadata.id, /^[a-f0-9-]{36}$/);
+  assert.ok(metadata.uploadedAt);
+  assert.equal(metadata.storagePath, undefined);
+});
+
+test('lista apenas os documentos do proprietário', async () => {
+  const { metadata } = await uploadDocument('alice');
+  await uploadDocument('bob', 'outro conteúdo', 'privado.txt');
 
   const ownerList = await request('/documents', { headers: { 'x-user-id': 'alice' } });
-  assert.equal((await ownerList.json()).length, 1);
+  assert.equal(ownerList.status, 200);
+  assert.deepEqual(await ownerList.json(), [metadata]);
 
-  const otherList = await request('/documents', { headers: { 'x-user-id': 'bob' } });
-  assert.deepEqual(await otherList.json(), []);
+  const emptyList = await request('/documents', { headers: { 'x-user-id': 'charlie' } });
+  assert.deepEqual(await emptyList.json(), []);
+});
+
+test('baixa um documento apenas para o proprietário', async () => {
+  const { metadata } = await uploadDocument('alice');
 
   const forbiddenDownload = await request(`/documents/${metadata.id}/download`, {
     headers: { 'x-user-id': 'bob' },
